@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rock Paper Scissors</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✊</text></svg>">
+  <link rel="stylesheet" href="style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Rock Paper Scissors</h1>
+      <p class="subtitle">Choose your move</p>
+    </header>
+
+    <div class="scoreboard">
+      <div class="score-item player-score">
+        <span class="score-label">You</span>
+        <span class="score-value" id="player-score">0</span>
+      </div>
+      <div class="score-item tie-score">
+        <span class="score-label">Ties</span>
+        <span class="score-value" id="tie-score">0</span>
+      </div>
+      <div class="score-item computer-score">
+        <span class="score-label">Bot</span>
+        <span class="score-value" id="computer-score">0</span>
+      </div>
+    </div>
+
+    <div class="round-display">
+      <span class="round-label">Round</span>
+      <span class="round-number" id="round-number">0</span>
+    </div>
+
+    <div class="battle-area">
+      <div class="player-area">
+        <div class="choice-display" id="player-choice-display">
+          <span class="choice-icon">🤔</span>
+        </div>
+        <span class="choice-name" id="player-choice-name">You</span>
+      </div>
+
+      <div class="vs-container">
+        <span class="vs-text">VS</span>
+        <div class="result-banner" id="result-banner">
+          <span class="result-text" id="result-text">Pick a move!</span>
+        </div>
+      </div>
+
+      <div class="computer-area">
+        <div class="choice-display computer" id="computer-choice-display">
+          <span class="choice-icon">🤖</span>
+        </div>
+        <span class="choice-name" id="computer-choice-name">Bot</span>
+      </div>
+    </div>
+
+    <div class="choices" id="choices">
+      <button class="choice-btn" data-choice="rock" aria-label="Play Rock">
+        <span class="btn-icon">✊</span>
+        <span class="btn-label">Rock <span class="key-hint">[R]</span></span>
+      </button>
+      <button class="choice-btn" data-choice="paper" aria-label="Play Paper">
+        <span class="btn-icon">✋</span>
+        <span class="btn-label">Paper <span class="key-hint">[P]</span></span>
+      </button>
+      <button class="choice-btn" data-choice="scissors" aria-label="Play Scissors">
+        <span class="btn-icon">✌️</span>
+        <span class="btn-label">Scissors <span class="key-hint">[S]</span></span>
+      </button>
+    </div>
+
+    <div class="controls">
+      <button class="reset-btn" id="reset-btn">Reset Game</button>
+    </div>
+
+    <div class="history-section">
+      <h2>Round History</h2>
+      <div class="history-list" id="history-list">
+        <div class="history-empty">No rounds played yet</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
