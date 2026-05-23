@@ -1,27 +1,37 @@
 // ===== DOM References =====
 const $ = (id) => document.getElementById(id);
 
-const disconnectBanner = $("disconnect-banner");
+// Nav
+const navUserName = $("nav-user-name");
+const navUserAvatar = $("nav-user-avatar");
 
-// Chat
-const roomList = $("room-list");
-const createRoomInput = $("create-room-input");
-const createRoomBtn = $("create-room-btn");
-const currentRoomName = $("current-room-name");
-const roomUserCount = $("room-user-count");
-const messagesContainer = $("messages-container");
-const messageInput = $("message-input");
-const sendBtn = $("send-btn");
-const leaveRoomBtn = $("leave-room-btn");
-const sidebarToggle = $("sidebar-toggle");
-const sidebar = $("sidebar");
-const sidebarOverlay = $("sidebar-overlay");
+// Disconnect
+const disconnectBanner = $("disconnect-banner");
 
 // Tabs
 const tabChat = $("tab-chat");
 const tabFeed = $("tab-feed");
 const chatView = $("chat-view");
 const feedView = $("feed-view");
+
+// Users Sidebar
+const usersSidebar = $("users-sidebar");
+const usersList = $("users-list");
+const onlineCount = $("online-count");
+const usersOverlay = $("users-overlay");
+const usersToggle = $("users-toggle");
+const usersToggleMobile = $("users-toggle-mobile");
+
+// DM
+const dmWelcome = $("dm-welcome");
+const dmConversation = $("dm-conversation");
+const dmTargetName = $("dm-target-name");
+const dmTargetAvatar = $("dm-target-avatar");
+const dmTargetStatus = $("dm-target-status");
+const dmMessagesContainer = $("dm-messages-container");
+const dmMessagesArea = $("dm-messages-area");
+const dmInput = $("dm-input");
+const dmSendBtn = $("dm-send-btn");
 
 // Feed
 const feedUserAvatar = $("feed-user-avatar");
@@ -32,12 +42,15 @@ const feedList = $("feed-list");
 
 // ===== State =====
 const socket = io();
-let currentRoom = null;
-let anonymousId = "";
-let userColor = "";
+let myUser = null; // { id, name, color }
+let onlineUsers = []; // [{ id, name, color }]
+let activeDMUserId = null; // id of the user we're chatting with
+let dmMessages = {}; // { userId: [messages] }
 let isAtBottom = true;
+
+// Feed state
 let postsData = [];
-let openComments = new Set(); // Track which posts have comments open
+let openComments = new Set();
 
 // ===== Utility =====
 function formatTime(timestamp) {
@@ -66,17 +79,15 @@ function formatTimeAgo(timestamp) {
 }
 
 function scrollToBottom(smooth = true) {
-  const area = $("messages-area");
   if (smooth) {
-    area.scrollTo({ top: area.scrollHeight, behavior: "smooth" });
+    dmMessagesArea.scrollTo({ top: dmMessagesArea.scrollHeight, behavior: "smooth" });
   } else {
-    area.scrollTop = area.scrollHeight;
+    dmMessagesArea.scrollTop = dmMessagesArea.scrollHeight;
   }
 }
 
 function isNearBottom() {
-  const area = $("messages-area");
-  return area.scrollHeight - area.scrollTop - area.clientHeight < 100;
+  return dmMessagesArea.scrollHeight - dmMessagesArea.scrollTop - dmMessagesArea.clientHeight < 100;
 }
 
 function escapeHtml(text) {
@@ -92,8 +103,8 @@ function switchTab(tab) {
   chatView.classList.toggle("active", tab === "chat");
   feedView.classList.toggle("active", tab === "feed");
 
-  if (tab === "chat" && currentRoom) {
-    messageInput.focus();
+  if (tab === "chat" && activeDMUserId) {
+    dmInput.focus();
   } else if (tab === "feed") {
     postTextInput.focus();
   }
@@ -104,331 +115,242 @@ tabFeed.addEventListener("click", () => switchTab("feed"));
 
 // ===== Socket Events: Init =====
 socket.on("init", (data) => {
-  anonymousId = data.anonymousId;
-  userColor = data.color;
-  renderRoomList(data.rooms);
+  myUser = data.user;
+  onlineUsers = data.onlineUsers;
   postsData = data.posts || [];
 
-  feedUserAvatar.style.background = userColor;
+  // Update nav
+  navUserName.textContent = myUser.name;
+  navUserAvatar.textContent = myUser.name.charAt(5).toUpperCase() || "U";
+  navUserAvatar.style.background = myUser.color;
 
-  // Render existing posts (from other users) into the feed
+  // Feed avatar
+  feedUserAvatar.textContent = myUser.name.charAt(5).toUpperCase() || "U";
+  feedUserAvatar.style.background = myUser.color;
+
+  // Render
+  renderOnlineUsers();
   renderFeed();
-
-  // Auto-join the general room
-  socket.emit("join-room", { room: "general" });
 });
 
-// ===== Socket Events: Chat =====
-socket.on("room-list", (rooms) => {
-  renderRoomList(rooms);
-});
-
-socket.on("room-joined", (data) => {
-  currentRoom = data.room;
-  anonymousId = data.anonymousId;
-  userColor = data.color;
-
-  feedUserAvatar.style.background = userColor;
-
-  currentRoomName.textContent = `#${data.room}`;
-  roomUserCount.textContent = `${data.users} user${data.users !== 1 ? "s" : ""}`;
-
-  renderMessages(data.history);
-  scrollToBottom(false);
-  messageInput.focus();
-  updateActiveRoom(data.room);
-});
-
-socket.on("new-message", (message) => {
-  appendMessage(message);
-  if (isNearBottom()) scrollToBottom();
-});
-
-socket.on("user-joined", (data) => {
-  roomUserCount.textContent = `${data.users} user${data.users !== 1 ? "s" : ""}`;
-  appendSystemMessage(`${data.user} joined`);
-});
-
-socket.on("user-left", (data) => {
-  roomUserCount.textContent = `${data.users} user${data.users !== 1 ? "s" : ""}`;
-  appendSystemMessage(`${data.user} left`);
-});
-
-socket.on("room-left", () => {
-  currentRoom = null;
-  switchTab("chat");
-});
-
-// ===== Socket Events: Feed =====
-
-socket.on("post-created", (post) => {
-  postsData.unshift(post);
-  const el = createPostElement(post);
-  el.style.animation = "none";
-  feedList.prepend(el);
-  // Remove empty-feed placeholder if present
-  const empty = feedList.querySelector(".empty-feed");
-  if (empty) empty.remove();
-});
-
-socket.on("post-updated", (post) => {
-  const idx = postsData.findIndex((p) => p.id === post.id);
-  if (idx !== -1) {
-    postsData[idx] = post;
-    // Update the post element in-place (preserves comment section state)
-    const el = document.getElementById(`post-${post.id}`);
-    if (el) {
-      const isLiked = post.likes.includes(anonymousId);
-      const isDisliked = post.dislikes.includes(anonymousId);
-
-      const likeBtn = el.querySelector('[data-action="like-post"]');
-      const dislikeBtn = el.querySelector('[data-action="dislike-post"]');
-
-      if (likeBtn) {
-        likeBtn.classList.toggle("active-like", isLiked);
-        const count = likeBtn.querySelector(".action-count");
-        if (count) count.textContent = post.likes.length;
-        const svg = likeBtn.querySelector("svg");
-        if (svg) svg.setAttribute("fill", isLiked ? "currentColor" : "none");
-      }
-
-      if (dislikeBtn) {
-        dislikeBtn.classList.toggle("active-dislike", isDisliked);
-        const count = dislikeBtn.querySelector(".action-count");
-        if (count) count.textContent = post.dislikes.length;
-        const svg = dislikeBtn.querySelector("svg");
-        if (svg) svg.setAttribute("fill", isDisliked ? "currentColor" : "none");
-      }
-
-      // Update comment count
-      const commentBtn = el.querySelector('[data-action="toggle-comments"]');
-      if (commentBtn) {
-        const count = commentBtn.querySelector(".action-count");
-        if (count) count.textContent = post.commentCount;
-      }
-    }
+// ===== Socket Events: Users Online/Offline =====
+socket.on("user-online", (user) => {
+  // Don't add duplicates
+  if (!onlineUsers.find((u) => u.id === user.id)) {
+    onlineUsers.push(user);
+    renderOnlineUsers();
   }
 });
 
-socket.on("comment-added", ({ postId, comment, commentCount }) => {
-  const post = postsData.find((p) => p.id === postId);
-  if (post) {
-    post.commentCount = commentCount;
+socket.on("user-offline", (userId) => {
+  onlineUsers = onlineUsers.filter((u) => u.id !== userId);
+  renderOnlineUsers();
 
-    // Update comment count button
-    const el = document.getElementById(`post-${postId}`);
-    if (el) {
-      const commentBtn = el.querySelector('[data-action="toggle-comments"]');
-      if (commentBtn) {
-        const count = commentBtn.querySelector(".action-count");
-        if (count) count.textContent = commentCount;
-      }
-    }
-
-    // If comments are open for this post, append comment
-    const section = document.querySelector(`.comments-section[data-post-id="${postId}"]`);
-    if (section && !section.classList.contains("hidden")) {
-      section.querySelector(".comments-list").appendChild(createCommentElement(comment, postId));
-    }
+  // If we were chatting with this user, update their status
+  if (activeDMUserId === userId) {
+    dmTargetStatus.textContent = "Offline";
+    dmTargetStatus.style.color = "var(--text-muted)";
   }
 });
 
-socket.on("comment-updated", ({ postId, comment }) => {
-  const post = postsData.find((p) => p.id === postId);
-  if (post) {
-    // Update in-memory
-    const section = document.querySelector(`.comments-section[data-post-id="${postId}"]`);
-    if (section) {
-      const commentEl = section.querySelector(`.comment-item[data-comment-id="${comment.id}"]`);
-      if (commentEl) {
-        commentEl.replaceWith(createCommentElement(comment, postId));
-      }
-    }
+// ===== Socket Events: DM =====
+socket.on("dm-message", (message) => {
+  // Find which user this conversation is with
+  const otherId = message.from === myUser.id ? message.to : message.from;
+
+  // Store message
+  if (!dmMessages[otherId]) dmMessages[otherId] = [];
+  dmMessages[otherId].push(message);
+
+  // If this conversation is active, append the message
+  if (activeDMUserId === otherId) {
+    appendDMMessage(message);
+    if (isNearBottom()) scrollToBottom();
   }
+
+  // Update the users list to show this user has unread messages
+  renderOnlineUsers();
 });
 
-socket.on("comments-loaded", ({ postId, comments }) => {
-  const section = document.querySelector(`.comments-section[data-post-id="${postId}"]`);
-  if (section) {
-    const list = section.querySelector(".comments-list");
-    list.innerHTML = "";
-    comments.forEach((c) => list.appendChild(createCommentElement(c, postId)));
-  }
+socket.on("dm-history", ({ with: otherId, messages }) => {
+  dmMessages[otherId] = messages || [];
+  renderDMMessages(otherId);
 });
 
-// ===== Render Functions: Chat =====
-function renderRoomList(rooms) {
-  roomList.innerHTML = "";
+// ===== Render Functions: Online Users =====
+function renderOnlineUsers() {
+  usersList.innerHTML = "";
 
-  if (rooms.length === 0) {
-    roomList.innerHTML = `<div class="room-item" style="color: var(--text-muted); font-size: 13px; padding: 20px 12px; text-align: center; justify-content: center;">No rooms yet.<br>Create one to start chatting!</div>`;
+  if (onlineUsers.length === 0) {
+    usersList.innerHTML = `
+      <div class="users-empty">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.3; margin-bottom: 8px;">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+        </svg>
+        <span>No one else is online</span>
+      </div>
+    `;
     return;
   }
 
-  rooms.forEach((room) => {
+  onlineUsers.forEach((user) => {
+    const isActive = activeDMUserId === user.id;
+    const hasUnread = dmMessages[user.id] && dmMessages[user.id].some(
+      (m) => m.from === user.id && !m.read
+    );
+
     const el = document.createElement("div");
-    el.className = `room-item${currentRoom === room.name ? " active" : ""}`;
+    el.className = `user-item${isActive ? " active" : ""}`;
     el.innerHTML = `
-      <div class="room-item-icon">#</div>
-      <div class="room-item-info">
-        <div class="room-item-name">${escapeHtml(room.name)}</div>
-        <div class="room-item-count">${room.users} user${room.users !== 1 ? "s" : ""}</div>
+      <div class="user-item-avatar" style="background: ${user.color}">
+        ${(user.name.charAt(5) || "?").toUpperCase()}
+        <span class="user-status-dot"></span>
       </div>
-      <div class="room-item-status"></div>
+      <div class="user-item-info">
+        <div class="user-item-name">${escapeHtml(user.name)}</div>
+        <div class="user-item-status">Online</div>
+      </div>
+      ${hasUnread ? '<div class="user-item-badge"></div>' : ""}
     `;
-    el.addEventListener("click", () => joinRoom(room.name));
-    roomList.appendChild(el);
+    el.addEventListener("click", () => selectDMUser(user.id));
+    usersList.appendChild(el);
   });
+
+  onlineCount.textContent = onlineUsers.length;
 }
 
-function renderMessages(messages) {
-  messagesContainer.innerHTML = "";
+// ===== DM Actions =====
+function selectDMUser(userId) {
+  const user = onlineUsers.find((u) => u.id === userId);
+  if (!user) return;
+
+  activeDMUserId = userId;
+
+  // Update UI
+  dmWelcome.classList.add("hidden");
+  dmConversation.classList.remove("hidden");
+
+  dmTargetName.textContent = user.name;
+  dmTargetAvatar.textContent = (user.name.charAt(5) || "?").toUpperCase();
+  dmTargetAvatar.style.background = user.color;
+  dmTargetStatus.textContent = "Online";
+  dmTargetStatus.style.color = "var(--success)";
+
+  // Highlight active user in sidebar
+  renderOnlineUsers();
+
+  // Close sidebar on mobile
+  if (window.innerWidth <= 768) {
+    usersSidebar.classList.remove("open");
+    usersOverlay.classList.remove("show");
+  }
+
+  // Load history
+  if (!dmMessages[userId]) {
+    dmMessages[userId] = [];
+  }
+  renderDMMessages(userId);
+
+  // Also request history from server
+  socket.emit("get-dm-history", { with: userId });
+
+  dmInput.focus();
+}
+
+function renderDMMessages(userId) {
+  dmMessagesContainer.innerHTML = "";
+  const messages = dmMessages[userId] || [];
 
   if (messages.length === 0) {
-    const welcome = document.createElement("div");
-    welcome.className = "welcome-message";
-    welcome.innerHTML = `
-      <svg width="48" height="48" viewBox="0 0 48 48" fill="none" style="margin: 0 auto 12px; display: block;">
-        <rect width="48" height="48" rx="12" fill="url(#gw)"/>
-        <path d="M14 28C14 24.6863 16.6863 22 20 22H28C31.3137 22 34 24.6863 34 28V34H14V28Z" fill="white" fill-opacity="0.9"/>
-        <defs>
-          <linearGradient id="gw" x1="0" y1="0" x2="48" y2="48">
-            <stop stop-color="#667eea"/><stop offset="1" stop-color="#764ba2"/>
-          </linearGradient>
-        </defs>
-      </svg>
-      <p>Welcome to #${escapeHtml(currentRoom)}!<br>Start the conversation by sending a message below.</p>
+    const target = onlineUsers.find((u) => u.id === userId);
+    const name = target ? target.name : "this user";
+    dmMessagesContainer.innerHTML = `
+      <div class="dm-welcome-msg">
+        <p>Start a conversation with <strong>${escapeHtml(name)}</strong></p>
+        <span>Say hello!</span>
+      </div>
     `;
-    messagesContainer.appendChild(welcome);
     return;
   }
 
-  messages.forEach((msg) => appendMessage(msg, false));
+  messages.forEach((msg) => appendDMMessage(msg, false));
+  setTimeout(() => scrollToBottom(false), 50);
 }
 
-function appendMessage(message, animate = true) {
-  const welcome = messagesContainer.querySelector(".welcome-message");
+function appendDMMessage(message, animate = true) {
+  // Remove welcome placeholder if present
+  const welcome = dmMessagesContainer.querySelector(".dm-welcome-msg");
   if (welcome) welcome.remove();
 
+  const isMine = message.from === myUser.id;
   const el = document.createElement("div");
-  el.className = "message";
+  el.className = `dm-message${isMine ? " dm-message-own" : ""}`;
   el.style.animation = animate ? "messageIn 0.25s ease" : "none";
 
+  const sender = isMine
+    ? myUser
+    : onlineUsers.find((u) => u.id === message.from);
+
+  const avatarLetter = sender
+    ? (sender.name.charAt(5) || "?").toUpperCase()
+    : "?";
+  const avatarColor = sender ? sender.color : "#666";
+
   el.innerHTML = `
-    <div class="message-avatar" style="background: ${message.color}">
-      ${message.user.charAt(5).toUpperCase() || "?"}
-    </div>
-    <div class="message-content">
-      <div class="message-header">
-        <span class="message-user" style="color: ${message.color}">${escapeHtml(message.user)}</span>
-        <span class="message-time">${formatTime(message.timestamp)}</span>
+    ${!isMine ? `<div class="dm-message-avatar" style="background: ${avatarColor}">${avatarLetter}</div>` : ""}
+    <div class="dm-message-content">
+      <div class="dm-message-bubble">
+        <div class="dm-message-text">${escapeHtml(message.text)}</div>
       </div>
-      <div class="message-bubble">
-        <div class="message-text">${escapeHtml(message.text)}</div>
-      </div>
+      <div class="dm-message-time">${formatTime(message.timestamp)}</div>
     </div>
   `;
-  messagesContainer.appendChild(el);
+
+  dmMessagesContainer.appendChild(el);
 }
 
-function appendSystemMessage(text) {
-  const el = document.createElement("div");
-  el.className = "system-message";
-  el.innerHTML = `
-    <span class="line"></span>
-    <span>${escapeHtml(text)}</span>
-    <span class="line"></span>
-  `;
-  messagesContainer.appendChild(el);
-  if (isNearBottom()) scrollToBottom();
+function sendDM() {
+  const text = dmInput.value.trim();
+  if (!text || !activeDMUserId) return;
+
+  socket.emit("send-dm", { to: activeDMUserId, text });
+  dmInput.value = "";
+  dmSendBtn.disabled = true;
+  dmInput.focus();
 }
 
-function updateActiveRoom(roomName) {
-  document.querySelectorAll(".room-item").forEach((el) => {
-    const nameEl = el.querySelector(".room-item-name");
-    if (nameEl && nameEl.textContent === roomName) {
-      el.classList.add("active");
-    } else {
-      el.classList.remove("active");
-    }
-  });
-}
-
-// ===== Chat Actions =====
-function joinRoom(room) {
-  if (!room || typeof room !== "string") return;
-  const trimmed = room.trim();
-  if (!trimmed) return;
-  socket.emit("join-room", { room: trimmed });
-  switchTab("chat");
-}
-
-function createRoom() {
-  const name = createRoomInput.value.trim();
-  if (!name) return;
-  createRoomInput.value = "";
-  joinRoom(name);
-}
-
-function sendMessage() {
-  const text = messageInput.value.trim();
-  if (!text || !currentRoom) return;
-
-  socket.emit("send-message", { room: currentRoom, text });
-  messageInput.value = "";
-  sendBtn.disabled = true;
-  messageInput.focus();
-}
-
-// ===== Chat Event Listeners =====
-createRoomBtn.addEventListener("click", createRoom);
-createRoomInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") createRoom();
-});
-
-sendBtn.addEventListener("click", sendMessage);
-messageInput.addEventListener("keydown", (e) => {
+// ===== DM Event Listeners =====
+dmSendBtn.addEventListener("click", sendDM);
+dmInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
-    sendMessage();
+    sendDM();
   }
 });
-messageInput.addEventListener("input", () => {
-  sendBtn.disabled = !messageInput.value.trim();
+dmInput.addEventListener("input", () => {
+  dmSendBtn.disabled = !dmInput.value.trim();
 });
 
-leaveRoomBtn.addEventListener("click", () => {
-  if (currentRoom) {
-    socket.emit("leave-room", { room: currentRoom });
-  }
-});
-
-$("messages-area").addEventListener("scroll", () => {
+dmMessagesArea.addEventListener("scroll", () => {
   isAtBottom = isNearBottom();
 });
 
-sidebarToggle.addEventListener("click", () => {
-  sidebar.classList.toggle("open");
-  sidebarOverlay.classList.toggle("show");
-});
-sidebarOverlay.addEventListener("click", () => {
-  sidebar.classList.remove("open");
-  sidebarOverlay.classList.remove("show");
-});
-document.addEventListener("click", (e) => {
-  const roomItem = e.target.closest(".room-item");
-  if (roomItem && window.innerWidth <= 768) {
-    sidebar.classList.remove("open");
-    sidebarOverlay.classList.remove("show");
-  }
+// ===== DM Sidebar Toggle =====
+function toggleUsersSidebar() {
+  usersSidebar.classList.toggle("open");
+  usersOverlay.classList.toggle("show");
+}
+
+usersToggle?.addEventListener("click", toggleUsersSidebar);
+usersToggleMobile?.addEventListener("click", toggleUsersSidebar);
+usersOverlay.addEventListener("click", () => {
+  usersSidebar.classList.remove("open");
+  usersOverlay.classList.remove("show");
 });
 
 // ===== Socket Connection Events =====
 socket.on("connect", () => {
   disconnectBanner.classList.add("hidden");
-  if (currentRoom) {
-    socket.emit("join-room", { room: currentRoom });
-  }
 });
 socket.on("disconnect", () => {
   disconnectBanner.classList.remove("hidden");
@@ -451,7 +373,7 @@ function renderFeed() {
 
   if (postsData.length === 0) {
     feedList.innerHTML = `
-      <div class="empty-feed">
+      <div class="empty-feed glass-card">
         <svg width="64" height="64" viewBox="0 0 48 48" fill="none" style="margin: 0 auto; display: block;">
           <rect width="48" height="48" rx="12" fill="url(#ge)"/>
           <line x1="16" y1="18" x2="32" y2="18" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
@@ -459,7 +381,7 @@ function renderFeed() {
           <line x1="16" y1="30" x2="24" y2="30" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.3"/>
           <defs>
             <linearGradient id="ge" x1="0" y1="0" x2="48" y2="48">
-              <stop stop-color="#667eea"/><stop offset="1" stop-color="#764ba2"/>
+              <stop stop-color="#8b5cf6"/><stop offset="1" stop-color="#6366f1"/>
             </linearGradient>
           </defs>
         </svg>
@@ -479,20 +401,112 @@ function renderFeed() {
     const section = document.querySelector(`.comments-section[data-post-id="${postId}"]`);
     if (section) {
       section.classList.remove("hidden");
-      // Reload comments since we re-created the element
       socket.emit("get-comments", { postId });
     }
   });
   openComments.clear();
 }
 
+// ===== Socket Events: Feed =====
+
+socket.on("post-created", (post) => {
+  postsData.unshift(post);
+  const el = createPostElement(post);
+  el.style.animation = "none";
+  feedList.prepend(el);
+  const empty = feedList.querySelector(".empty-feed");
+  if (empty) empty.remove();
+});
+
+socket.on("post-updated", (post) => {
+  const idx = postsData.findIndex((p) => p.id === post.id);
+  if (idx !== -1) {
+    postsData[idx] = post;
+    const el = document.getElementById(`post-${post.id}`);
+    if (el) {
+      const isLiked = post.likes.includes(myUser.id);
+      const isDisliked = post.dislikes.includes(myUser.id);
+
+      const likeBtn = el.querySelector('[data-action="like-post"]');
+      const dislikeBtn = el.querySelector('[data-action="dislike-post"]');
+
+      if (likeBtn) {
+        likeBtn.classList.toggle("active-like", isLiked);
+        const count = likeBtn.querySelector(".action-count");
+        if (count) count.textContent = post.likes.length;
+        const svg = likeBtn.querySelector("svg");
+        if (svg) svg.setAttribute("fill", isLiked ? "currentColor" : "none");
+      }
+
+      if (dislikeBtn) {
+        dislikeBtn.classList.toggle("active-dislike", isDisliked);
+        const count = dislikeBtn.querySelector(".action-count");
+        if (count) count.textContent = post.dislikes.length;
+        const svg = dislikeBtn.querySelector("svg");
+        if (svg) svg.setAttribute("fill", isDisliked ? "currentColor" : "none");
+      }
+
+      const commentBtn = el.querySelector('[data-action="toggle-comments"]');
+      if (commentBtn) {
+        const count = commentBtn.querySelector(".action-count");
+        if (count) count.textContent = post.commentCount;
+      }
+    }
+  }
+});
+
+socket.on("comment-added", ({ postId, comment, commentCount }) => {
+  const post = postsData.find((p) => p.id === postId);
+  if (post) {
+    post.commentCount = commentCount;
+
+    const el = document.getElementById(`post-${postId}`);
+    if (el) {
+      const commentBtn = el.querySelector('[data-action="toggle-comments"]');
+      if (commentBtn) {
+        const count = commentBtn.querySelector(".action-count");
+        if (count) count.textContent = commentCount;
+      }
+    }
+
+    const section = document.querySelector(`.comments-section[data-post-id="${postId}"]`);
+    if (section && !section.classList.contains("hidden")) {
+      section.querySelector(".comments-list").appendChild(createCommentElement(comment, postId));
+    }
+  }
+});
+
+socket.on("comment-updated", ({ postId, comment }) => {
+  const post = postsData.find((p) => p.id === postId);
+  if (post) {
+    const section = document.querySelector(`.comments-section[data-post-id="${postId}"]`);
+    if (section) {
+      const commentEl = section.querySelector(`.comment-item[data-comment-id="${comment.id}"]`);
+      if (commentEl) {
+        commentEl.replaceWith(createCommentElement(comment, postId));
+      }
+    }
+  }
+});
+
+socket.on("comments-loaded", ({ postId, comments }) => {
+  const section = document.querySelector(`.comments-section[data-post-id="${postId}"]`);
+  if (section) {
+    const list = section.querySelector(".comments-list");
+    list.innerHTML = "";
+    comments.forEach((c) => list.appendChild(createCommentElement(c, postId)));
+  }
+});
+
+// ===== Post Element Factory =====
+
 function createPostElement(post) {
   const el = document.createElement("div");
-  el.className = "feed-post";
+  el.className = "glass-card feed-post";
   el.id = `post-${post.id}`;
 
-  const isLiked = post.likes.includes(anonymousId);
-  const isDisliked = post.dislikes.includes(anonymousId);
+  const isLiked = post.likes.includes(myUser.id);
+  const isDisliked = post.dislikes.includes(myUser.id);
 
   let mediaHtml = "";
   if (post.mediaUrl) {
@@ -518,7 +532,7 @@ function createPostElement(post) {
 
   el.innerHTML = `
     <div class="feed-post-header">
-      <div class="post-avatar" style="background: ${post.color}">${post.anonymousId.charAt(5).toUpperCase()}</div>
+      <div class="user-avatar-sm" style="background: ${post.color}">${post.anonymousId.charAt(5).toUpperCase()}</div>
       <span class="feed-post-author" style="color: ${post.color}">${escapeHtml(post.anonymousId)}</span>
       <span class="feed-post-time">${formatTimeAgo(post.timestamp)}</span>
     </div>
@@ -548,7 +562,6 @@ function createPostElement(post) {
     </div>
   `;
 
-  // Post action event listeners
   const likeBtn = el.querySelector('[data-action="like-post"]');
   const dislikeBtn = el.querySelector('[data-action="dislike-post"]');
   const commentToggle = el.querySelector('[data-action="toggle-comments"]');
@@ -572,7 +585,6 @@ function createPostElement(post) {
     section.querySelector(".comment-input")?.focus();
   });
 
-  // Comment input
   const commentInput = el.querySelector(".comment-input");
   const commentSend = el.querySelector(".comment-send-btn");
 
@@ -607,11 +619,11 @@ function createCommentElement(comment, postId) {
   el.className = "comment-item";
   el.setAttribute("data-comment-id", comment.id);
 
-  const isLiked = comment.likes.includes(anonymousId);
-  const isDisliked = comment.dislikes.includes(anonymousId);
+  const isLiked = comment.likes.includes(myUser.id);
+  const isDisliked = comment.dislikes.includes(myUser.id);
 
   el.innerHTML = `
-    <div class="comment-avatar" style="background: ${comment.color}">${comment.anonymousId.charAt(5).toUpperCase()}</div>
+    <div class="comment-avatar" style="background: ${comment.color}">${(comment.anonymousId.charAt(5) || "?").toUpperCase()}</div>
     <div class="comment-body">
       <div class="comment-header">
         <span class="comment-author" style="color: ${comment.color}">${escapeHtml(comment.anonymousId)}</span>
@@ -631,7 +643,6 @@ function createCommentElement(comment, postId) {
     </div>
   `;
 
-  // Comment action listeners
   el.querySelector('[data-action="like-comment"]').addEventListener("click", function () {
     socket.emit("toggle-like-comment", { postId, commentId: comment.id });
   });
