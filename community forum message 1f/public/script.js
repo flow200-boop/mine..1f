@@ -1,12 +1,6 @@
 // ===== DOM References =====
 const $ = (id) => document.getElementById(id);
 
-const entryScreen = $("entry-screen");
-const appScreen = $("app-screen");
-const roomInput = $("room-input");
-const joinBtn = $("join-btn");
-const popularTags = $("popular-tags");
-const leaveBtn = $("leave-btn");
 const disconnectBanner = $("disconnect-banner");
 
 // Chat
@@ -44,7 +38,6 @@ let userColor = "";
 let isAtBottom = true;
 let postsData = [];
 let openComments = new Set(); // Track which posts have comments open
-let pendingJoin = null; // Deferred room join until init is received
 
 // ===== Utility =====
 function formatTime(timestamp) {
@@ -109,45 +102,6 @@ function switchTab(tab) {
 tabChat.addEventListener("click", () => switchTab("chat"));
 tabFeed.addEventListener("click", () => switchTab("feed"));
 
-// ===== Entry =====
-joinBtn.addEventListener("click", () => {
-  const name = roomInput.value.trim() || "Guest";
-  enterApp(name);
-});
-
-roomInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    const name = roomInput.value.trim() || "Guest";
-    enterApp(name);
-  }
-});
-
-function enterApp(name) {
-  entryScreen.classList.add("hidden");
-  appScreen.classList.remove("hidden");
-
-  // Set avatar for feed
-  feedUserAvatar.textContent = name.charAt(0).toUpperCase();
-
-  // If init was already received, join directly. Otherwise defer until init arrives.
-  if (anonymousId) {
-    socket.emit("join-room", { room: "general" });
-  } else {
-    pendingJoin = "general";
-  }
-
-  switchTab("chat");
-}
-
-leaveBtn.addEventListener("click", () => {
-  if (currentRoom) {
-    socket.emit("leave-room", { room: currentRoom });
-  }
-  appScreen.classList.add("hidden");
-  entryScreen.classList.remove("hidden");
-  roomInput.focus();
-});
-
 // ===== Socket Events: Init =====
 socket.on("init", (data) => {
   anonymousId = data.anonymousId;
@@ -160,11 +114,8 @@ socket.on("init", (data) => {
   // Render existing posts (from other users) into the feed
   renderFeed();
 
-  // Process any deferred room join (ensures server has our userSockets entry)
-  if (pendingJoin) {
-    socket.emit("join-room", { room: pendingJoin });
-    pendingJoin = null;
-  }
+  // Auto-join the general room
+  socket.emit("join-room", { room: "general" });
 });
 
 // ===== Socket Events: Chat =====
@@ -408,11 +359,6 @@ function joinRoom(room) {
   if (!room || typeof room !== "string") return;
   const trimmed = room.trim();
   if (!trimmed) return;
-  // If init hasn't been received yet, defer the join until it arrives
-  if (!anonymousId) {
-    pendingJoin = trimmed;
-    return;
-  }
   socket.emit("join-room", { room: trimmed });
   switchTab("chat");
 }
@@ -487,23 +433,6 @@ socket.on("connect", () => {
 socket.on("disconnect", () => {
   disconnectBanner.classList.remove("hidden");
 });
-
-// ===== Popular Rooms =====
-const POPULAR_ROOMS = ["general", "random", "tech", "gaming", "music"];
-function renderPopularRooms() {
-  POPULAR_ROOMS.forEach((room) => {
-    const tag = document.createElement("span");
-    tag.className = "room-tag";
-    tag.textContent = `#${room}`;
-    tag.addEventListener("click", () => {
-      enterApp(roomInput.value.trim() || "Guest");
-      // Use a microtask delay to let init propagate if needed
-      setTimeout(() => joinRoom(room), 50);
-    });
-    popularTags.appendChild(tag);
-  });
-}
-renderPopularRooms();
 
 // ========================================================================
 // FEED FUNCTIONS
@@ -738,6 +667,3 @@ postTextInput.addEventListener("keydown", (e) => {
     postSubmitBtn.click();
   }
 });
-
-// ===== Init =====
-roomInput.focus();

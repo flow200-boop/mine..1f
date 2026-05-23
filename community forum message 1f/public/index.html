@@ -7,40 +7,8 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- Entry Screen -->
-  <div id="entry-screen" class="entry-screen">
-    <div class="entry-card">
-      <div class="entry-logo">
-        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-          <rect width="48" height="48" rx="12" fill="url(#g1)"/>
-          <path d="M14 28C14 24.6863 16.6863 22 20 22H28C31.3137 22 34 24.6863 34 28V34H14V28Z" fill="white" fill-opacity="0.9"/>
-          <circle cx="20" cy="20" r="3" fill="white" fill-opacity="0.9"/>
-          <circle cx="28" cy="20" r="3" fill="white" fill-opacity="0.9"/>
-          <defs>
-            <linearGradient id="g1" x1="0" y1="0" x2="48" y2="48">
-              <stop stop-color="#667eea"/>
-              <stop offset="1" stop-color="#764ba2"/>
-            </linearGradient>
-          </defs>
-        </svg>
-      </div>
-      <h1 class="entry-title">Social Hub</h1>
-      <p class="entry-subtitle">Chat in real-time or share posts with everyone</p>
-      <div class="entry-form">
-        <div class="input-group">
-          <input type="text" id="room-input" class="input" placeholder="Enter your name to get started..." maxlength="30" autofocus />
-          <button id="join-btn" class="btn btn-primary">Get Started</button>
-        </div>
-      </div>
-      <div class="popular-rooms">
-        <span class="popular-label">Jump in:</span>
-        <div class="popular-tags" id="popular-tags"></div>
-      </div>
-    </div>
-  </div>
-
   <!-- Main App Screen -->
-  <div id="app-screen" class="app-screen hidden">
+  <div id="app-screen" class="app-screen">
 
     <!-- Tab Navigation -->
     <nav class="tab-bar">
@@ -58,12 +26,6 @@
           Feed
         </button>
         <div class="tab-spacer"></div>
-        <button id="leave-btn" class="btn btn-ghost tab-leave-btn" title="Leave">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
-          </svg>
-          Leave
-        </button>
       </div>
     </nav>
 
