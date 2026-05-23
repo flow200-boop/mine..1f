@@ -80,6 +80,6 @@ CREATE POLICY "Anyone can comment" ON public.comments FOR INSERT WITH CHECK (tru
 CREATE POLICY "Anyone can update comments" ON public.comments FOR UPDATE USING (true);
 
 -- ===== 6. Enable Realtime =====
-ALTER PUBLICATION supabase_realtime ADD TABLE IF NOT EXISTS public.dm_messages;
-ALTER PUBLICATION supabase_realtime ADD TABLE IF NOT EXISTS public.posts;
-ALTER PUBLICATION supabase_realtime ADD TABLE IF NOT EXISTS public.comments;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.dm_messages;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.posts;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.comments;
