@@ -2,6 +2,13 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const path = require("path");
+const { createClient } = require("@supabase/supabase-js");
+require("dotenv").config();
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
 
 const app = express();
 const server = http.createServer(app);
@@ -9,13 +16,8 @@ const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, "public")));
 
-// ===== DM & User Storage =====
+// ===== User Storage (in-memory — transient socket sessions) =====
 const users = new Map(); // socketId -> { id, name, color }
-const dmMessages = new Map(); // "user1:user2" -> [{ from, to, text, timestamp }]
-
-// ===== Feed Storage =====
-const posts = [];
-const postComments = new Map();
 
 const ANONYMOUS_COLORS = [
   "#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
@@ -40,10 +42,6 @@ function generateId() {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
 
-function getDMKey(a, b) {
-  return [a, b].sort().join(":");
-}
-
 function detectMediaType(url) {
   if (!url || typeof url !== "string") return null;
   const trimmed = url.trim();
@@ -58,33 +56,93 @@ function detectMediaType(url) {
   return "link";
 }
 
-function formatPostForClient(post) {
+// ===== Supabase Helpers =====
+
+function dbPostToClient(post, commentCount = 0) {
   return {
     id: post.id,
-    anonymousId: post.anonymousId,
+    anonymousId: post.anonymous_id,
     color: post.color,
     text: post.text,
-    mediaUrl: post.mediaUrl,
-    mediaType: post.mediaType,
-    timestamp: post.timestamp,
-    likes: Array.from(post.likes),
-    dislikes: Array.from(post.dislikes),
-    commentCount: (postComments.get(post.id) || []).length,
+    mediaUrl: post.media_url || null,
+    mediaType: post.media_type || null,
+    timestamp: new Date(post.created_at).getTime(),
+    likes: post.likes || [],
+    dislikes: post.dislikes || [],
+    commentCount,
   };
 }
 
-function formatCommentForClient(comment) {
+function dbCommentToClient(comment) {
   return {
     id: comment.id,
-    postId: comment.postId,
-    anonymousId: comment.anonymousId,
+    postId: comment.post_id,
+    anonymousId: comment.anonymous_id,
     color: comment.color,
     text: comment.text,
-    timestamp: comment.timestamp,
-    likes: Array.from(comment.likes),
-    dislikes: Array.from(comment.dislikes),
+    timestamp: new Date(comment.created_at).getTime(),
+    likes: comment.likes || [],
+    dislikes: comment.dislikes || [],
   };
 }
+
+async function loadPosts() {
+  const { data: dbPosts, error } = await supabase
+    .from("posts")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(500);
+
+  if (error) {
+    console.error("[DB] Error loading posts:", error.message);
+    return [];
+  }
+
+  if (!dbPosts || dbPosts.length === 0) return [];
+
+  // Get comment counts
+  const postIds = dbPosts.map((p) => p.id);
+  const { data: allComments } = await supabase
+    .from("comments")
+    .select("post_id");
+
+  const countMap = {};
+  (allComments || []).forEach((c) => {
+    countMap[c.post_id] = (countMap[c.post_id] || 0) + 1;
+  });
+
+  return dbPosts.map((p) => dbPostToClient(p, countMap[p.id] || 0));
+}
+
+async function loadCommentsForPost(postId) {
+  const { data, error } = await supabase
+    .from("comments")
+    .select("*")
+    .eq("post_id", postId)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    console.error("[DB] Error loading comments:", error.message);
+    return [];
+  }
+
+  return (data || []).map(dbCommentToClient);
+}
+
+async function getCommentCount(postId) {
+  const { count, error } = await supabase
+    .from("comments")
+    .select("*", { count: "exact", head: true })
+    .eq("post_id", postId);
+
+  if (error) {
+    console.error("[DB] Error counting comments:", error.message);
+    return 0;
+  }
+  return count || 0;
+}
+
+// ===== Socket.IO =====
 
 io.on("connection", (socket) => {
   const userId = generateAnonymousId();
@@ -103,11 +161,13 @@ io.on("connection", (socket) => {
     }
   }
 
-  // Send init data
-  socket.emit("init", {
-    user,
-    onlineUsers,
-    posts: posts.map(formatPostForClient),
+  // Send init data (posts loaded asynchronously)
+  loadPosts().then((posts) => {
+    socket.emit("init", {
+      user,
+      onlineUsers,
+      posts,
+    });
   });
 
   // Broadcast new user to everyone else
@@ -115,7 +175,7 @@ io.on("connection", (socket) => {
 
   // ===== DM Events =====
 
-  socket.on("send-dm", ({ to, text }) => {
+  socket.on("send-dm", async ({ to, text }) => {
     const fromUser = users.get(socket.id);
     if (!fromUser || !text || typeof text !== "string") return;
 
@@ -123,46 +183,71 @@ io.on("connection", (socket) => {
     if (!trimmed) return;
 
     const message = {
+      id: generateId(),
+      sender_id: fromUser.id,
+      receiver_id: to,
+      text: trimmed,
+    };
+
+    const { error } = await supabase.from("dm_messages").insert(message);
+    if (error) {
+      console.error("[DB] Error saving DM:", error.message);
+      return;
+    }
+
+    const clientMsg = {
       from: fromUser.id,
       to,
       text: trimmed,
       timestamp: Date.now(),
     };
 
-    const key = getDMKey(fromUser.id, to);
-    if (!dmMessages.has(key)) dmMessages.set(key, []);
-    dmMessages.get(key).push(message);
-
-    if (dmMessages.get(key).length > 500) {
-      dmMessages.get(key) = dmMessages.get(key).slice(-500);
-    }
-
     // Send to recipient if online
     for (const [sid, u] of users) {
       if (u.id === to) {
-        io.to(sid).emit("dm-message", message);
+        io.to(sid).emit("dm-message", clientMsg);
         break;
       }
     }
 
     // Send back to sender
-    socket.emit("dm-message", message);
+    socket.emit("dm-message", clientMsg);
   });
 
-  socket.on("get-dm-history", ({ with: otherId }) => {
+  socket.on("get-dm-history", async ({ with: otherId }) => {
     const myUser = users.get(socket.id);
     if (!myUser || !otherId) return;
 
-    const key = getDMKey(myUser.id, otherId);
+    const { data, error } = await supabase
+      .from("dm_messages")
+      .select("*")
+      .or(
+        `and(sender_id.eq.${myUser.id},receiver_id.eq.${otherId}),and(sender_id.eq.${otherId},receiver_id.eq.${myUser.id})`
+      )
+      .order("created_at", { ascending: true })
+      .limit(500);
+
+    if (error) {
+      console.error("[DB] Error loading DM history:", error.message);
+      return;
+    }
+
+    const messages = (data || []).map((m) => ({
+      from: m.sender_id,
+      to: m.receiver_id,
+      text: m.text,
+      timestamp: new Date(m.created_at).getTime(),
+    }));
+
     socket.emit("dm-history", {
       with: otherId,
-      messages: dmMessages.get(key) || [],
+      messages,
     });
   });
 
   // ===== Feed Events =====
 
-  socket.on("create-post", ({ text, mediaUrl }) => {
+  socket.on("create-post", async ({ text, mediaUrl }) => {
     const userData = users.get(socket.id);
     if (!userData || !text || typeof text !== "string") return;
 
@@ -172,159 +257,240 @@ io.on("connection", (socket) => {
     const trimmedMedia = mediaUrl && typeof mediaUrl === "string" ? mediaUrl.trim() : null;
     const mediaType = trimmedMedia ? detectMediaType(trimmedMedia) : null;
 
-    const post = {
+    const now = new Date().toISOString();
+    const dbPost = {
       id: generateId(),
-      anonymousId: userData.id,
+      anonymous_id: userData.id,
       color: userData.color,
       text: trimmedText,
-      mediaUrl: trimmedMedia || null,
-      mediaType: mediaType,
-      timestamp: Date.now(),
-      likes: new Set(),
-      dislikes: new Set(),
+      media_url: trimmedMedia || null,
+      media_type: mediaType,
+      created_at: now,
+      likes: [],
+      dislikes: [],
     };
 
-    posts.unshift(post);
-
-    if (posts.length > 500) {
-      const removed = posts.pop();
-      postComments.delete(removed.id);
+    const { error } = await supabase.from("posts").insert(dbPost);
+    if (error) {
+      console.error("[DB] Error creating post:", error.message);
+      return;
     }
 
-    io.emit("post-created", formatPostForClient(post));
+    const clientPost = dbPostToClient(dbPost);
+    io.emit("post-created", clientPost);
   });
 
-  socket.on("toggle-like-post", ({ postId }) => {
+  socket.on("toggle-like-post", async ({ postId }) => {
     const userData = users.get(socket.id);
     if (!userData || !postId) return;
 
-    const post = posts.find((p) => p.id === postId);
-    if (!post) return;
+    const { data: post, error: fetchError } = await supabase
+      .from("posts")
+      .select("*")
+      .eq("id", postId)
+      .single();
 
-    const userId = userData.id;
-
-    if (post.likes.has(userId)) {
-      post.likes.delete(userId);
-    } else {
-      post.likes.add(userId);
-      post.dislikes.delete(userId);
+    if (fetchError || !post) {
+      console.error("[DB] Error fetching post for like:", fetchError?.message);
+      return;
     }
 
-    io.emit("post-updated", formatPostForClient(post));
+    let likes = post.likes || [];
+    let dislikes = post.dislikes || [];
+
+    if (likes.includes(userData.id)) {
+      likes = likes.filter((id) => id !== userData.id);
+    } else {
+      likes = [...likes, userData.id];
+      dislikes = dislikes.filter((id) => id !== userData.id);
+    }
+
+    const { error: updateError } = await supabase
+      .from("posts")
+      .update({ likes, dislikes })
+      .eq("id", postId);
+
+    if (updateError) {
+      console.error("[DB] Error updating post likes:", updateError.message);
+      return;
+    }
+
+    const commentCount = await getCommentCount(postId);
+    io.emit("post-updated", dbPostToClient({ ...post, likes, dislikes }, commentCount));
   });
 
-  socket.on("toggle-dislike-post", ({ postId }) => {
+  socket.on("toggle-dislike-post", async ({ postId }) => {
     const userData = users.get(socket.id);
     if (!userData || !postId) return;
 
-    const post = posts.find((p) => p.id === postId);
-    if (!post) return;
+    const { data: post, error: fetchError } = await supabase
+      .from("posts")
+      .select("*")
+      .eq("id", postId)
+      .single();
 
-    const userId = userData.id;
-
-    if (post.dislikes.has(userId)) {
-      post.dislikes.delete(userId);
-    } else {
-      post.dislikes.add(userId);
-      post.likes.delete(userId);
+    if (fetchError || !post) {
+      console.error("[DB] Error fetching post for dislike:", fetchError?.message);
+      return;
     }
 
-    io.emit("post-updated", formatPostForClient(post));
+    let likes = post.likes || [];
+    let dislikes = post.dislikes || [];
+
+    if (dislikes.includes(userData.id)) {
+      dislikes = dislikes.filter((id) => id !== userData.id);
+    } else {
+      dislikes = [...dislikes, userData.id];
+      likes = likes.filter((id) => id !== userData.id);
+    }
+
+    const { error: updateError } = await supabase
+      .from("posts")
+      .update({ likes, dislikes })
+      .eq("id", postId);
+
+    if (updateError) {
+      console.error("[DB] Error updating post dislikes:", updateError.message);
+      return;
+    }
+
+    const commentCount = await getCommentCount(postId);
+    io.emit("post-updated", dbPostToClient({ ...post, likes, dislikes }, commentCount));
   });
 
-  socket.on("add-comment", ({ postId, text }) => {
+  socket.on("add-comment", async ({ postId, text }) => {
     const userData = users.get(socket.id);
     if (!userData || !postId || !text || typeof text !== "string") return;
 
     const trimmedText = text.trim();
     if (!trimmedText) return;
 
-    const post = posts.find((p) => p.id === postId);
-    if (!post) return;
+    // Verify post exists
+    const { data: post, error: postCheck } = await supabase
+      .from("posts")
+      .select("id")
+      .eq("id", postId)
+      .single();
 
-    const comment = {
-      id: generateId(),
-      postId: postId,
-      anonymousId: userData.id,
+    if (postCheck || !post) return;
+
+    const commentId = generateId();
+    const now = new Date().toISOString();
+    const dbComment = {
+      id: commentId,
+      post_id: postId,
+      anonymous_id: userData.id,
       color: userData.color,
       text: trimmedText,
-      timestamp: Date.now(),
-      likes: new Set(),
-      dislikes: new Set(),
+      created_at: now,
+      likes: [],
+      dislikes: [],
     };
 
-    if (!postComments.has(postId)) {
-      postComments.set(postId, []);
+    const { error } = await supabase.from("comments").insert(dbComment);
+    if (error) {
+      console.error("[DB] Error adding comment:", error.message);
+      return;
     }
-    postComments.get(postId).push(comment);
 
-    if (postComments.get(postId).length > 200) {
-      postComments.get(postId) = postComments.get(postId).slice(-200);
-    }
+    const clientComment = dbCommentToClient(dbComment);
+    const commentCount = await getCommentCount(postId);
 
     io.emit("comment-added", {
       postId,
-      comment: formatCommentForClient(comment),
-      commentCount: postComments.get(postId).length,
+      comment: clientComment,
+      commentCount,
     });
   });
 
-  socket.on("toggle-like-comment", ({ postId, commentId }) => {
+  socket.on("toggle-like-comment", async ({ postId, commentId }) => {
     const userData = users.get(socket.id);
     if (!userData || !postId || !commentId) return;
 
-    const comments = postComments.get(postId);
-    if (!comments) return;
+    const { data: comment, error: fetchError } = await supabase
+      .from("comments")
+      .select("*")
+      .eq("id", commentId)
+      .single();
 
-    const comment = comments.find((c) => c.id === commentId);
-    if (!comment) return;
+    if (fetchError || !comment) {
+      console.error("[DB] Error fetching comment for like:", fetchError?.message);
+      return;
+    }
 
-    const userId = userData.id;
+    let likes = comment.likes || [];
+    let dislikes = comment.dislikes || [];
 
-    if (comment.likes.has(userId)) {
-      comment.likes.delete(userId);
+    if (likes.includes(userData.id)) {
+      likes = likes.filter((id) => id !== userData.id);
     } else {
-      comment.likes.add(userId);
-      comment.dislikes.delete(userId);
+      likes = [...likes, userData.id];
+      dislikes = dislikes.filter((id) => id !== userData.id);
+    }
+
+    const { error: updateError } = await supabase
+      .from("comments")
+      .update({ likes, dislikes })
+      .eq("id", commentId);
+
+    if (updateError) {
+      console.error("[DB] Error updating comment likes:", updateError.message);
+      return;
     }
 
     io.emit("comment-updated", {
       postId,
-      comment: formatCommentForClient(comment),
+      comment: dbCommentToClient({ ...comment, likes, dislikes }),
     });
   });
 
-  socket.on("toggle-dislike-comment", ({ postId, commentId }) => {
+  socket.on("toggle-dislike-comment", async ({ postId, commentId }) => {
     const userData = users.get(socket.id);
     if (!userData || !postId || !commentId) return;
 
-    const comments = postComments.get(postId);
-    if (!comments) return;
+    const { data: comment, error: fetchError } = await supabase
+      .from("comments")
+      .select("*")
+      .eq("id", commentId)
+      .single();
 
-    const comment = comments.find((c) => c.id === commentId);
-    if (!comment) return;
+    if (fetchError || !comment) {
+      console.error("[DB] Error fetching comment for dislike:", fetchError?.message);
+      return;
+    }
 
-    const userId = userData.id;
+    let likes = comment.likes || [];
+    let dislikes = comment.dislikes || [];
 
-    if (comment.dislikes.has(userId)) {
-      comment.dislikes.delete(userId);
+    if (dislikes.includes(userData.id)) {
+      dislikes = dislikes.filter((id) => id !== userData.id);
     } else {
-      comment.dislikes.add(userId);
-      comment.likes.delete(userId);
+      dislikes = [...dislikes, userData.id];
+      likes = likes.filter((id) => id !== userData.id);
+    }
+
+    const { error: updateError } = await supabase
+      .from("comments")
+      .update({ likes, dislikes })
+      .eq("id", commentId);
+
+    if (updateError) {
+      console.error("[DB] Error updating comment dislikes:", updateError.message);
+      return;
     }
 
     io.emit("comment-updated", {
       postId,
-      comment: formatCommentForClient(comment),
+      comment: dbCommentToClient({ ...comment, likes, dislikes }),
     });
   });
 
-  socket.on("get-comments", ({ postId }) => {
+  socket.on("get-comments", async ({ postId }) => {
     if (!postId) return;
-    const comments = postComments.get(postId) || [];
+    const comments = await loadCommentsForPost(postId);
     socket.emit("comments-loaded", {
       postId,
-      comments: comments.map(formatCommentForClient),
+      comments,
     });
   });
 
